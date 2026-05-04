@@ -1,0 +1,109 @@
+name: Mirror latest Tor Browser
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect latest upstream version
+        id: detect
+        run: |
+          set -euo pipefail
+          latest=$(curl -fsSL https://www.torproject.org/dist/torbrowser/ \
+            | grep -oE 'href="[0-9]+\.[0-9]+(\.[0-9]+)?/"' \
+            | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' \
+            | sort -V | tail -1)
+          if [ -z "$latest" ]; then echo "Failed to detect latest"; exit 1; fi
+          current=$(grep -m1 'version "' Casks/tor-browser.rb | sed 's/.*version "//;s/".*//')
+          echo "latest=$latest"   >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "Current: $current  Latest: $latest"
+          if [ "$latest" = "$current" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download .dmg and signature
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          V: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          curl -fSL -o "tor-browser-macos-${V}.dmg" \
+            "https://www.torproject.org/dist/torbrowser/${V}/tor-browser-macos-${V}.dmg"
+          curl -fSL -o "tor-browser-macos-${V}.dmg.asc" \
+            "https://www.torproject.org/dist/torbrowser/${V}/tor-browser-macos-${V}.dmg.asc"
+
+      - name: Verify GPG signature
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          V: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          chmod 700 "$GNUPGHOME"
+          fpr="EF6E286DDA85EA2A4BA7DE684E2C6E8793298290"
+          got_key=false
+          for src in \
+              "https://keys.openpgp.org/vks/v1/by-fingerprint/${fpr}" \
+              "https://openpgpkey.torproject.org/.well-known/openpgpkey/torproject.org/hu/kounek7zrdx745qydx6p59t9mqjpuhdf?l=torbrowser"; do
+            if curl -fsSL "$src" | gpg --import; then got_key=true; break; fi
+          done
+          if [ "$got_key" != true ]; then echo "Failed to fetch signing key"; exit 1; fi
+          gpg --list-keys "$fpr"
+          gpg --verify "tor-browser-macos-${V}.dmg.asc" "tor-browser-macos-${V}.dmg"
+
+      - name: Compute SHA256
+        if: steps.detect.outputs.changed == 'true'
+        id: hash
+        env:
+          V: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          sha=$(sha256sum "tor-browser-macos-${V}.dmg" | awk '{print $1}')
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release with .dmg asset
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          gh release create "v${V}" "tor-browser-macos-${V}.dmg" \
+            --title "Tor Browser ${V}" \
+            --notes "Mirrored from https://www.torproject.org/dist/torbrowser/${V}/ — GPG-verified against fingerprint EF6E286DDA85EA2A4BA7DE684E2C6E8793298290."
+
+      - name: Update cask file
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          V_OLD: ${{ steps.detect.outputs.current }}
+          V_NEW: ${{ steps.detect.outputs.latest }}
+          SHA:   ${{ steps.hash.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sed -i "s/version \"${V_OLD}\"/version \"${V_NEW}\"/" Casks/tor-browser.rb
+          sed -i "s/sha256 \"[a-f0-9]\\{64\\}\"/sha256 \"${SHA}\"/" Casks/tor-browser.rb
+          grep -E '^\s+(version|sha256) ' Casks/tor-browser.rb
+
+      - name: Commit and push
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V_NEW: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/tor-browser.rb
+          git commit -m "Bump tor-browser to ${V_NEW}"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
