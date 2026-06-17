@@ -1,6 +1,6 @@
 cask "tor-browser" do
-  version "15.0.15"
-  sha256 "a46ae3494e92795f476dfb57a2d542295408fc2c73be5ba593514b51262e1a18"
+  version "15.0.16"
+  sha256 "97100dcb608ecb48352dedbdb76da3d5a95fc2e41c3dd9ef00242b09ab8e6f32"
 
   url "https://github.com/egigoka/homebrew-tor-browser-mirror/releases/download/v#{version}/tor-browser-macos-#{version}.dmg",
       verified: "github.com/egigoka/homebrew-tor-browser-mirror/"
