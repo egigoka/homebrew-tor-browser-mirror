@@ -12,8 +12,6 @@ cask "tor-browser" do
     regex(%r{href=["']?(\d+(?:\.\d+){1,2})/}i)
   end
 
-  depends_on macos: :catalina
-
   app "Tor Browser.app"
 
   zap trash: [
